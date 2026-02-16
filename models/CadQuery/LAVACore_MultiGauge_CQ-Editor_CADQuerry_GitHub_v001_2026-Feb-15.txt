@@ -1,0 +1,184 @@
+"""
+'LAVACore_MultiGauge_CQ-Editor_CADQuerry_GitHub_v001_2026-Feb-15'
+Gen2/Gen3 Hybrid Core, .STL/.STEP Auto-Conversion
+License MiT open source
+
+Features:
+
+Precision energy "packetization" (IH mode), 100 Joules of convective aerial flux conversion
+Bi-Energy compatibility, impulse heating within a range of intense 250 ~ 550 °C temperatures (flamme/induction)
+Suspension "floating" Open Ring, guides metal disc and performs thermal decoupling, with optional snap-fit action
+Cradle Pads, provide stress-free mechanical resilience to accomodate 14 mm I.D. glass containment
+
+Typography (fonts & colours), remains to implement:
+
+Trebuchet MS (Bold/Regular) for disc labels;  JetBrains Mono SemiBold for ring engravings
+LightGray (metal), DarkGoldenrod (disc engravings), SkyBlue (ring engravings), SlateGray (wire)
+"""
+
+import cadquery as cq
+import math
+
+ring   = True   # Show optional Open Ring, made of Inconel X‑750;  False = Enhanced Gen2, True = Gen3 model
+labels = True   # Show optional Labels
+gauge  = 24     # Permissible Gauge Options are 22, 23, 24, 25, 26
+
+# ASTM B258 Gauge, (*) marks 4th decimal round up
+#
+# Wire dia. (mm) = 0.127 * 92 ^ ((36 - gauge) / 39)
+
+wire_radius = 0.2555                   # FallBack value (mm)
+
+if gauge == 22: wire_radius = 0.3226   # 0.6452 mm (dia.)    SnapFit, radial clearance ~0.0564 mm
+if gauge == 23: wire_radius = 0.2867   # 0.5733 mm (dia.) *
+if gauge == 24: wire_radius = 0.2555   # 0.5109 mm (dia.) *  SnugFit, radial clearance ~0.0945 mm
+if gauge == 25: wire_radius = 0.2274   # 0.4547 mm (dia.)
+if gauge == 26: wire_radius = 0.2025   # 0.4049 mm (dia.) *  LooseFit, radial clearance ~0.1475 mm
+
+# Decoupled Geometric Parameters
+thickness     = 1.0                   # Plate thickness (mm)
+disk_diameter = 12.55                 # LAVACore disc has 17 holes and is made of SS430 Alloy
+hole_radius   = 0.75565               # 1.5113 mm (dia.), Drill Bit No. 53
+
+base_unit     = 0.25                  # Base Cell Size ajusts width of the pad's root (mm)
+pad_unit      = 0.25                  # Pad Cell size, 4 cells form the main 2x2 sub-matrix (mm)
+pad_anchor    = 6.2532                # Anchor distance to main center ensures seemless attachment of Base and Pad contours (mm)
+
+cradle_width       = 0.70             # Diameter/Width of cradle torus (mm)
+cradle_standoff    = 0.55             # Cradle Base, relative to large disk peripheral contour (mm)
+floating_clearance = (cradle_width / 2) - wire_radius   # Cradle/Wire Clearance for thermo-mechanical resilience (mm)
+
+ring_orbit         = (disk_diameter / 2) + cradle_standoff + wire_radius - (cradle_width / 2)   # Only half of the suspended Open Ring enters a cradle,
+                                                                                                # Radius of revolution axis aligns to Pad tip (mm)
+ring_gap           = 0.75             # Linear width of the Open Ring gap (mm)
+
+angle_missing      = ring_gap * 180 / (math.pi * ring_orbit)   # Linear gap-length to angular span conversion (degrees)
+angle_covered      = 360 - angle_missing                       # Angular coverage of the Open Ring (degrees)
+angle_start        = 37 - angle_missing/2                      # Symmetric centering of the gap (degrees)
+
+
+# =========================================================
+# === FONCTIONS DE CONSTRUCTION (méthode du casse-tête) ===
+# =========================================================
+
+def make_pad(p_unit, anchor):
+    recipe = [(-2, 0, "Co"), (-1, 0, "Sq"), (-1, 0, "Q"), (-1, 0, "Co"),
+              (-1, 1, "Q"), (0, 0, "Sq"), (0, 0, "Q"), (0, 0, "Co"),
+              (0, 1, "Q"), (1, 0, "Co")]
+    
+    centers = [
+        (anchor + p_unit, -2 * p_unit),
+        (anchor + p_unit, 0),
+        (anchor + p_unit, 2 * p_unit)
+    ]
+    
+    pad = cq.Workplane("XY")
+    for r_idx, c_idx, t in recipe:
+        x0, y0 = anchor + c_idx * p_unit, r_idx * p_unit
+        
+        square = (cq.Workplane("XY")
+                  .rect(p_unit, p_unit)
+                  .extrude(thickness)
+                  .translate((x0 + p_unit/2, y0 + p_unit/2, 0)))
+        
+        cx, cy = (centers[0] if r_idx < -1 else centers[1] if r_idx < 1 else centers[2])
+        circle = (cq.Workplane("XY")
+                  .center(cx, cy)
+                  .circle(p_unit)
+                  .extrude(thickness)
+                  .translate((0, 0, 0)))
+        
+        if t == "Sq": pad = pad.union(square)
+        elif t == "Q": pad = pad.union(square.intersect(circle))
+        elif t == "Co": pad = pad.union(square.cut(circle))
+    return pad
+
+def text_arc(text, radius, angle_center, size, spacing=5, inverse=False, target_z=1.0, depth=0.1):
+    letters = []
+    n = len(text)
+    for i, ch in enumerate(text):
+        if ch == " ": continue
+        angle = angle_center + (i - (n-1)/2) * spacing
+        ang_rad = math.radians(angle)
+        x, y = radius * math.cos(ang_rad), radius * math.sin(ang_rad)
+        rot_z = angle - 90 if not inverse else angle + 90
+        wp = (cq.Workplane("XY")
+              .text(ch, fontsize=size, distance=-depth, font="HersheySans")
+              .rotate((0,0,0), (0,0,1), rot_z)
+              .translate((x, y, target_z)))
+        if wp.val() is not None: letters.append(wp)
+    
+    if not letters: return cq.Workplane("XY")
+    result = letters[0]
+    for wp in letters[1:]: result = result.union(wp)
+    return result
+
+# ======================================================
+# === ASSEMBLAGE =======================================
+# ======================================================
+
+core = cq.Workplane("XY").circle(disk_diameter/2).extrude(thickness)
+
+pad_geo = make_pad(pad_unit, pad_anchor)
+for i in range(6):
+    core = core.union(pad_geo.rotate((0,0,0), (0,0,1), i*60))
+
+hole_pts = [(0,0), (2.66,0), (1.8809,1.8809), (0,2.66), (-1.8809,1.8809), 
+            (-2.66,0), (-1.8809,-1.8809), (0,-2.66), (1.8809,-1.8809),
+            (4.4437,1.8407), (1.8407,4.4437), (-1.8407,4.4437), (-4.4437,1.8407),
+            (-4.4437,-1.8407), (-1.8407,-4.4437), (1.8407,-4.4437), (4.4437,-1.8407)]
+core = core.faces(">Z").workplane().pushPoints(hole_pts).hole(hole_radius * 2)
+
+groove_profile = (cq.Workplane("YZ")
+                  .center(ring_orbit, thickness/2)
+                  .circle(cradle_width/2))
+core = core.cut(groove_profile.sweep(cq.Workplane("XY").circle(ring_orbit)))
+
+if ring:
+    ring_path = (cq.Workplane("XY")
+                 .moveTo(ring_orbit * math.cos(math.radians(angle_start)),
+                         ring_orbit * math.sin(math.radians(angle_start)))
+                 .threePointArc((ring_orbit * math.cos(math.radians(angle_start + angle_covered/2)), 
+                                 ring_orbit * math.sin(math.radians(angle_start + angle_covered/2))),
+                                (ring_orbit * math.cos(math.radians(angle_start + angle_covered)), 
+                                 ring_orbit * math.sin(math.radians(angle_start + angle_covered)))))
+    ring_solid = (cq.Workplane("YZ")
+                  .center(ring_orbit, thickness/2)
+                  .circle(wire_radius)
+                  .sweep(ring_path))
+    
+    if labels:
+        z_start_cut  = (thickness / 2) + wire_radius + 0.025
+        label_offset = 0.01 + ((26 - gauge) * 0.005)
+        center_ring  = angle_start + (angle_covered / 1.597)
+        
+        labels_vol = text_arc("Inconel", ring_orbit + label_offset, center_ring - 2.2,
+                              0.33, 2.6, target_z=z_start_cut, inverse=True, depth=0.1)
+        labels_vol = labels_vol.union(text_arc("X-750", ring_orbit + label_offset, center_ring + 15.7,
+                                               0.33, 2.2, target_z=z_start_cut, inverse=True, depth=0.1))
+        labels_vol = labels_vol.union(text_arc(f"AWG#{gauge}", ring_orbit + label_offset, center_ring + 32.9,
+                                               0.33, 2.7, target_z=z_start_cut, inverse=True, depth=0.1))
+        
+        ring_solid = ring_solid.cut(labels_vol)
+    
+    core = core.union(ring_solid)
+
+if labels:
+    d_label = (disk_diameter/2) - 0.34
+    z_disk  = thickness + 0.001
+    core = core.cut(text_arc("eroCAVAL", d_label, 134, 0.35, 5.5, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc("034SS",   d_label, 89,  0.35, 5.5, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc("1",       d_label, 53,  0.35, 5.5, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc(".", (disk_diameter/2)-0.35, 50, 0.35, 5.5, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc("0",       d_label, 47,  0.35, 5.5, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc("mm",      d_label, 38,  0.35, 4.7, target_z=z_disk, depth=0.1))
+    core = core.cut(text_arc("BY EGZOSET", (disk_diameter/2)-0.32, 270,
+                               0.35, 8, inverse=True, target_z=z_disk, depth=0.1))
+
+file_name = f"Lavacore_Gen3_AWG{gauge}"
+cq.exporters.export(core, f"{file_name}.step")
+cq.exporters.export(core, f"{file_name}.stl")
+
+if 'show_object' in globals():
+    show_object(core, name="LAVACore_Gen3")
+
